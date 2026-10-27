@@ -1,0 +1,150 @@
+name: Release Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web-ui/package-lock.json
+
+      - name: Install web UI dependencies
+        working-directory: web-ui
+        run: npm ci
+
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+
+      - name: Prepare build files
+        run: |
+          if [ -n "${{ secrets.KEY_BASE64 }}" ]; then
+            echo "${{ secrets.KEY_BASE64 }}" | base64 -d > app/app.key
+          fi
+          if [ -n "${{ secrets.SIGNING_CONFIG }}" ]; then
+            echo "${{ secrets.SIGNING_CONFIG }}" > local.properties
+          fi
+          if [ -n "${{ secrets.GOOGLE_SERVICES_JSON }}" ]; then
+            echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
+          elif [ ! -f app/google-services.json ]; then
+            cat << 'EOF' > app/google-services.json
+          {
+            "project_info": {
+              "project_number": "123456789012",
+              "project_id": "domchat-app",
+              "storage_bucket": "domchat-app.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:123456789012:android:abcdef0123456789",
+                  "android_client_info": {
+                    "package_name": "com.domchat.app"
+                  }
+                },
+                "oauth_client": [],
+                "api_key": [
+                  {
+                    "current_key": "dummy_api_key_for_build"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
+              },
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:123456789012:android:abcdef0123456788",
+                  "android_client_info": {
+                    "package_name": "com.domchat.app.dev"
+                  }
+                },
+                "oauth_client": [],
+                "api_key": [
+                  {
+                    "current_key": "dummy_api_key_for_build"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          EOF
+          fi
+
+      - name: Gradle Build
+        env:
+          JAVA_OPTS: "-Xmx5120m -XX:+UseG1GC"
+          GRADLE_OPTS: "-Xmx5120m -XX:+UseG1GC -Dfile.encoding=UTF-8"
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleStableRelease
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: Domchat-APKs
+          path: app/build/outputs/apk/**/*.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          tag_name: v1.0
+          name: "Domchat v1.0"
+          body: |
+            ### Domchat v1.0
+            - **Commit**: `${{ github.sha }}`
+            - **Branch**: `${{ github.ref_name }}`
+            
+            Android client for roleplay and character interactions with LLMs, SillyTavern cards, lorebooks, and voice playback.
+            
+            #### Features & Fixes:
+            - **Reasoning Badge & Glass Styling**: Synchronized reasoning badges (active, expanded thought view, "Reasoned for [time]", and waiting dots) with chat bubble blur, tone, luminance, and transparency controls.
+            - **Persona Picker Glass Theme**: Enhanced user persona picker popup with comfortable button spacing, dark glassy surfaces, and specular highlights.
+            - **Chat Bar Layout**: Resolved message input text overlap with optical context circle icon.
+            - **All-in-One Lossless Backup & Restore**: Added one-tap complete export and seamless import for all settings, prompts, exact values, images, avatars, backgrounds, characters, and chats.
+            - **Backup Sanitization**: Purged legacy names and defaulted cloud backup folder to `domchat_backups`.
+            - **TTS Player Background Blur**: Integrated with active chat blur provider for real-time frosted glass effects.
+          files: app/build/outputs/apk/**/*.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

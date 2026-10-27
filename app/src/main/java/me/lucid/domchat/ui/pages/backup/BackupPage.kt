@@ -1,0 +1,1399 @@
+package me.lucid.domchat.ui.pages.backup
+
+import me.lucid.domchat.ui.theme.LocalDarkMode
+import me.lucid.domchat.utils.PermissionChecker
+
+import androidx.annotation.StringRes
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularWavyProgressIndicator
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.MultiChoiceSegmentedButtonRow
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CloudSync
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.FileUpload
+import androidx.compose.material.icons.rounded.Inventory2
+import androidx.compose.material.icons.rounded.CloudUpload
+import androidx.compose.material.icons.rounded.SystemUpdateAlt
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
+import me.lucid.domchat.ui.components.ui.ToastType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import me.lucid.domchat.R
+import me.lucid.domchat.data.datastore.WebDavConfig
+import me.lucid.domchat.data.sync.BackupContentOption
+import me.lucid.domchat.data.sync.WebDavBackupItem
+import me.lucid.domchat.ui.components.nav.BackButton
+import me.lucid.domchat.ui.components.ui.FormItem
+import me.lucid.domchat.ui.components.ui.AetherDestructiveConfirmDialog
+import me.lucid.domchat.ui.context.LocalToaster
+import me.lucid.domchat.ui.hooks.HapticPattern
+import me.lucid.domchat.ui.hooks.rememberPremiumHaptics
+import me.lucid.domchat.ui.modifier.ApplyDialogWindowBlur
+import me.lucid.domchat.ui.modifier.domChatBlurEffect
+import me.lucid.domchat.ui.modifier.domChatSheetContainerColor
+import me.lucid.domchat.ui.pages.setting.LocalSettingsWideLayout
+import me.lucid.domchat.ui.pages.setting.components.SettingGroupItem
+import me.lucid.domchat.ui.pages.setting.components.SettingsGroup
+import me.lucid.domchat.ui.theme.AppShapes
+import me.lucid.domchat.ui.theme.AppSurface
+import me.lucid.domchat.utils.fileSizeToString
+import me.lucid.domchat.utils.onError
+import me.lucid.domchat.utils.onLoading
+import me.lucid.domchat.utils.onSuccess
+import me.lucid.domchat.utils.toLocalDateTime
+import okio.buffer
+import okio.sink
+import okio.source
+import org.koin.androidx.compose.koinViewModel
+import java.io.File
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import kotlin.system.exitProcess
+
+enum class BackupTab(
+    val routeValue: String,
+    val icon: ImageVector,
+    val titleRes: Int,
+) {
+    WebDav("webdav", Icons.Rounded.CloudSync, R.string.backup_page_webdav_backup),
+    Local("local", Icons.Rounded.Folder, R.string.backup_page_import_export);
+
+    companion object {
+        fun fromRoute(route: String): BackupTab {
+            return entries.firstOrNull { it.routeValue == route } ?: WebDav
+        }
+    }
+}
+
+@Composable
+fun BackupPage(
+    initialTab: BackupTab = BackupTab.WebDav,
+    vm: BackupVM = koinViewModel(),
+) {
+    val settings by vm.settings.collectAsStateWithLifecycle()
+    val pagerState = rememberPagerState(initialPage = initialTab.ordinal) { BackupTab.entries.size }
+    val scope = rememberCoroutineScope()
+    val useWideLayout = LocalSettingsWideLayout.current
+    val currentTab = BackupTab.entries[pagerState.currentPage]
+
+    LaunchedEffect(initialTab) {
+        if (pagerState.currentPage != initialTab.ordinal) {
+            pagerState.scrollToPage(initialTab.ordinal)
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(stringResource(currentTab.titleRes))
+                },
+                navigationIcon = {
+                    BackButton()
+                }
+            )
+        },
+        bottomBar = {
+            if (!useWideLayout) {
+                BackupTabPillBar(
+                    selectedTab = currentTab,
+                    enableHaptics = settings.displaySetting.enableUIHaptics,
+                    onTabSelected = { tab ->
+                        scope.launch { pagerState.animateScrollToPage(tab.ordinal) }
+                    }
+                )
+            }
+        }
+    ) { innerPadding ->
+        if (useWideLayout) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
+                    .padding(top = innerPadding.calculateTopPadding())
+            ) {
+                when (currentTab) {
+                    BackupTab.WebDav -> WebDavPage(vm)
+                    BackupTab.Local -> ImportExportPage(vm)
+                }
+            }
+        } else {
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = innerPadding.calculateTopPadding())
+                    .background(MaterialTheme.colorScheme.background),
+                userScrollEnabled = true,
+            ) { page ->
+                when (BackupTab.entries[page]) {
+                    BackupTab.WebDav -> WebDavPage(vm)
+                    BackupTab.Local -> ImportExportPage(vm)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BackupTabPillBar(
+    selectedTab: BackupTab,
+    enableHaptics: Boolean,
+    onTabSelected: (BackupTab) -> Unit,
+) {
+    val haptics = rememberPremiumHaptics(enabled = enableHaptics)
+    val isDark = LocalDarkMode.current
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 16.dp),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            color = if (isDark) Color(0xFF141520).copy(alpha = 0.85f) else Color.White.copy(alpha = 0.9f),
+            border = BorderStroke(1.dp, if (isDark) Color.White.copy(alpha = 0.10f) else Color.Black.copy(alpha = 0.08f)),
+            shadowElevation = 0.dp,
+            modifier = Modifier.domChatBlurEffect(if (isDark) Color(0xFF141520) else Color.White, RoundedCornerShape(28.dp))
+        ) {
+            Row(
+                modifier = Modifier.padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                BackupTab.entries.forEach { tab ->
+                    val selected = tab == selectedTab
+                    Box(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .then(
+                                if (selected) {
+                                    Modifier
+                                        .background(if (isDark) Color.White.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                                        .border(1.dp, if (isDark) Color.White.copy(alpha = 0.2f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.3f), CircleShape)
+                                } else {
+                                    Modifier.clickable {
+                                        haptics.perform(HapticPattern.Tick)
+                                        onTabSelected(tab)
+                                    }
+                                }
+                            )
+                            .padding(12.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = tab.icon,
+                            contentDescription = stringResource(tab.titleRes),
+                            tint = if (selected) {
+                                if (isDark) Color.White else MaterialTheme.colorScheme.primary
+                            } else {
+                                if (isDark) Color.White.copy(alpha = 0.5f) else MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BackupCardLabel(@StringRes titleRes: Int) {
+    Text(
+        text = stringResource(titleRes),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun WebDavPage(
+    vm: BackupVM
+) {
+    val settings by vm.settings.collectAsStateWithLifecycle()
+    val webDavConfig = settings.webDavConfig.sanitize()
+    val toaster = LocalToaster.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var showBackupFiles by remember { mutableStateOf(false) }
+    var showRestartDialog by remember { mutableStateOf(false) }
+    var restoreResult by remember { mutableStateOf<me.lucid.domchat.data.sync.WebdavSync.RestoreResult?>(null) }
+    var restoringItemId by remember { mutableStateOf<String?>(null) }
+    var isBackingUp by remember { mutableStateOf(false) }
+    var pendingDeleteItem by remember { mutableStateOf<WebDavBackupItem?>(null) }
+    var pendingRestoreItem by remember { mutableStateOf<WebDavBackupItem?>(null) }
+    
+    // Permission handling after restore
+    var pendingFeatureAccess by remember {
+        mutableStateOf(PermissionChecker.MissingFeatureAccess())
+    }
+    var showPermissionDialog by remember { mutableStateOf(false) }
+    
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ ->
+        scope.launch {
+            val missing = PermissionChecker.getMissingFeatureAccess(context, vm.getAssistantsSnapshot())
+            if (missing.specialAccesses.isNotEmpty()) {
+                pendingFeatureAccess = PermissionChecker.MissingFeatureAccess(
+                    specialAccesses = missing.specialAccesses
+                )
+                showPermissionDialog = true
+            } else {
+                showRestartDialog = true
+            }
+        }
+    }
+
+    val specialAccessLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        showRestartDialog = true
+    }
+
+    fun updateWebDavConfig(newConfig: WebDavConfig) {
+        vm.updateSettings(settings.copy(webDavConfig = newConfig))
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 128.dp)
+                .imePadding(),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Surface(
+                color = if (LocalDarkMode.current) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surfaceContainerHigh,
+                shape = AppShapes.CardLarge,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FormItem(
+                        label = { BackupCardLabel(R.string.backup_page_webdav_server_address) }
+                    ) {
+                        OutlinedTextField(
+                            modifier = Modifier.fillMaxWidth(),
+                            value = webDavConfig.url,
+                            onValueChange = { updateWebDavConfig(webDavConfig.copy(url = it.trim())) },
+                            singleLine = true,
+                            shape = AppShapes.InputField
+                        )
+                    }
+                    FormItem(
+                        label = { BackupCardLabel(R.string.backup_page_username) }
+                    ) {
+                        OutlinedTextField(
+                            modifier = Modifier.fillMaxWidth(),
+                            value = webDavConfig.username,
+                            onValueChange = {
+                                updateWebDavConfig(
+                                    webDavConfig.copy(
+                                        username = it.trim()
+                                    )
+                                )
+                            },
+                            singleLine = true,
+                            shape = AppShapes.InputField
+                        )
+                    }
+                    FormItem(
+                        label = { BackupCardLabel(R.string.backup_page_password) }
+                    ) {
+                        var passwordVisible by remember { mutableStateOf(false) }
+                        OutlinedTextField(
+                            modifier = Modifier.fillMaxWidth(),
+                            value = webDavConfig.password,
+                            onValueChange = { updateWebDavConfig(webDavConfig.copy(password = it)) },
+                            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                val image = if (passwordVisible)
+                                    Icons.Rounded.VisibilityOff
+                                else
+                                    Icons.Rounded.Visibility
+                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                    Icon(imageVector = image, null)
+                                }
+                            },
+                            singleLine = true,
+                            shape = AppShapes.InputField
+                        )
+                    }
+                    FormItem(
+                        label = { BackupCardLabel(R.string.backup_page_path) }
+                    ) {
+                        OutlinedTextField(
+                            modifier = Modifier.fillMaxWidth(),
+                            value = webDavConfig.path,
+                            onValueChange = { updateWebDavConfig(webDavConfig.copy(path = it.trim())) },
+                            singleLine = true,
+                            shape = AppShapes.InputField
+                        )
+                    }
+                    FormItem(
+                        modifier = Modifier.padding(top = 4.dp),
+                        label = { BackupCardLabel(R.string.backup_page_backup_items) }
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            MultiChoiceSegmentedButtonRow(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp),
+                            ) {
+                                WebDavConfig.BackupItem.entries.forEachIndexed { index, item ->
+                                    SegmentedButton(
+                                        shape = SegmentedButtonDefaults.itemShape(
+                                            index = index,
+                                            count = WebDavConfig.BackupItem.entries.size
+                                        ),
+                                        onCheckedChange = {
+                                            val newItems = if (it) {
+                                                webDavConfig.items + item
+                                            } else {
+                                                webDavConfig.items - item
+                                            }
+                                            updateWebDavConfig(webDavConfig.copy(items = newItems))
+                                        },
+                                        checked = item in webDavConfig.items
+                                    ) {
+                                        Text(
+                                            when (item) {
+                                                WebDavConfig.BackupItem.DATABASE -> stringResource(R.string.backup_page_chat_records)
+                                                WebDavConfig.BackupItem.FILES -> stringResource(R.string.backup_page_files)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                            Surface(
+                                onClick = {
+                                    scope.launch {
+                                        try {
+                                            vm.testWebDav()
+                                            toaster.show(
+                                                context.getString(R.string.backup_page_connection_success),
+                                                type = ToastType.Success
+                                            )
+                                        } catch (e: Exception) {
+                                            e.printStackTrace()
+                                            toaster.show(
+                                                context.getString(
+                                                    R.string.backup_page_connection_failed,
+                                                    e.message ?: ""
+                                                ), type = ToastType.Error
+                                            )
+                                        }
+                                    }
+                                },
+                                shape = CircleShape,
+                                color = Color.Transparent,
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                                modifier = Modifier.size(40.dp),
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Rounded.CloudSync,
+                                        contentDescription = stringResource(R.string.backup_page_test_connection),
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(120.dp)
+                .background(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            MaterialTheme.colorScheme.background
+                        )
+                    )
+                )
+        )
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalAlignment = Alignment.End,
+        ) {
+            FloatingActionButton(
+                onClick = {
+                    showBackupFiles = true
+                },
+                shape = CircleShape,
+                containerColor = if (LocalDarkMode.current) Color(0xFF1E202E).copy(alpha = 0.85f) else Color.White.copy(alpha = 0.9f),
+                contentColor = if (LocalDarkMode.current) Color.White else Color.Black,
+                modifier = Modifier.border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+            ) {
+                Icon(
+                    Icons.Rounded.SystemUpdateAlt,
+                    contentDescription = stringResource(R.string.backup_page_restore),
+                )
+            }
+            FloatingActionButton(
+                onClick = {
+                    if (!isBackingUp) {
+                        scope.launch {
+                            isBackingUp = true
+                            runCatching {
+                                vm.backup()
+                                vm.loadBackupFileItems()
+                                toaster.show(
+                                    context.getString(R.string.backup_page_backup_success),
+                                    type = ToastType.Success
+                                )
+                            }.onFailure {
+                                it.printStackTrace()
+                                toaster.show(
+                                    it.message ?: context.getString(R.string.backup_page_unknown_error),
+                                    type = ToastType.Error
+                                )
+                            }
+                            isBackingUp = false
+                        }
+                    }
+                },
+                shape = CircleShape,
+                containerColor = Color.White,
+                contentColor = Color.Black,
+            ) {
+                if (isBackingUp) {
+                    CircularWavyProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        color = Color.Black,
+                    )
+                } else {
+                    Icon(
+                        Icons.Rounded.CloudUpload,
+                        contentDescription = stringResource(R.string.backup_page_backup_now),
+                    )
+                }
+            }
+        }
+    }
+
+    if (showBackupFiles) {
+        ApplyDialogWindowBlur()
+        ModalBottomSheet(
+            containerColor = androidx.compose.ui.graphics.lerp(
+                Color(0xFF14151C).copy(alpha = 0.92f),
+                domChatSheetContainerColor(),
+                0.35f
+            ).copy(alpha = 0.94f),
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            tonalElevation = 0.dp,
+            dragHandle = {
+                me.lucid.domchat.ui.components.chat.AetherSheetDragHandle()
+            },
+            onDismissRequest = {
+                showBackupFiles = false
+            },
+            sheetState = rememberModalBottomSheetState(
+                skipPartiallyExpanded = true
+            ),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.8f)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    stringResource(R.string.backup_page_webdav_backup_files),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                val backupItems by vm.webDavBackupItems.collectAsStateWithLifecycle()
+                backupItems.onSuccess {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(it) { item ->
+                            BackupItemCard(
+                                item = item,
+                                isRestoring = restoringItemId == item.displayName,
+                                onDelete = { pendingDeleteItem = item },
+                                onRestore = { pendingRestoreItem = item },
+                            )
+                        }
+                    }
+                }.onError {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = stringResource(R.string.backup_page_loading_failed, it.message ?: ""),
+                            color = Color.Red
+                        )
+                    }
+                }.onLoading {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularWavyProgressIndicator()
+                    }
+                }
+            }
+        }
+    }
+
+    pendingDeleteItem?.let { item ->
+        AetherDestructiveConfirmDialog(
+            title = stringResource(R.string.backup_page_delete_title),
+            consequence = stringResource(R.string.backup_page_delete_consequence),
+            onDismiss = { pendingDeleteItem = null },
+            onConfirm = {
+                pendingDeleteItem = null
+                scope.launch {
+                    runCatching {
+                        vm.deleteWebDavBackupFile(item)
+                        toaster.show(
+                            context.getString(R.string.backup_page_delete_success),
+                            type = ToastType.Success
+                        )
+                        vm.loadBackupFileItems()
+                    }.onFailure { err ->
+                        err.printStackTrace()
+                        toaster.show(
+                            context.getString(
+                                R.string.backup_page_delete_failed,
+                                err.message ?: ""
+                            ),
+                            type = ToastType.Error
+                        )
+                    }
+                }
+            },
+        )
+    }
+
+    pendingRestoreItem?.let { item ->
+        AetherDestructiveConfirmDialog(
+            title = stringResource(R.string.backup_page_restore_overwrite_title),
+            consequence = stringResource(R.string.backup_page_restore_overwrite_consequence),
+            confirmLabel = stringResource(R.string.backup_page_restore_now),
+            onDismiss = { pendingRestoreItem = null },
+            onConfirm = {
+                pendingRestoreItem = null
+                scope.launch {
+                    restoringItemId = item.displayName
+                    runCatching {
+                        val result = vm.restore(item = item)
+                        restoreResult = result
+                        toaster.show(
+                            context.getString(R.string.backup_page_restore_success),
+                            type = ToastType.Success
+                        )
+                        showBackupFiles = false
+
+                        val missing = PermissionChecker.getMissingFeatureAccess(
+                            context,
+                            vm.getAssistantsSnapshot()
+                        )
+                        if (!missing.isEmpty) {
+                            pendingFeatureAccess = missing
+                            showPermissionDialog = true
+                        } else {
+                            showRestartDialog = true
+                        }
+                    }.onFailure { err ->
+                        err.printStackTrace()
+                        toaster.show(
+                            context.getString(
+                                R.string.backup_page_restore_failed,
+                                err.message ?: ""
+                            ),
+                            type = ToastType.Error
+                        )
+                    }
+                    restoringItemId = null
+                }
+            },
+        )
+    }
+
+    // Permission explanation dialog
+    if (showPermissionDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                // User dismissed - proceed without permissions
+                showPermissionDialog = false
+                showRestartDialog = true
+            },
+            title = { Text(stringResource(R.string.backup_restore_permissions_required)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.backup_restore_permissions_message))
+                    PermissionChecker.getFeatureAccessDescriptions(pendingFeatureAccess).forEach { description ->
+                        val desc = description
+                        Text("- $desc", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text(
+                        stringResource(R.string.backup_restore_permissions_follow_up),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showPermissionDialog = false
+                        when {
+                            pendingFeatureAccess.runtimePermissions.isNotEmpty() -> {
+                                permissionLauncher.launch(pendingFeatureAccess.runtimePermissions.toTypedArray())
+                            }
+                            pendingFeatureAccess.specialAccesses.isNotEmpty() -> {
+                                val nextAccess = pendingFeatureAccess.specialAccesses.firstOrNull()
+                                    ?: return@Button
+                                specialAccessLauncher.launch(
+                                    PermissionChecker.createSpecialAccessIntent(nextAccess)
+                                )
+                            }
+                            else -> {
+                                showRestartDialog = true
+                            }
+                        }
+                    }
+                ) {
+                    Text(
+                        if (pendingFeatureAccess.runtimePermissions.isNotEmpty()) {
+                            stringResource(R.string.backup_restore_grant_permissions)
+                        } else {
+                            stringResource(R.string.open_settings)
+                        }
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showPermissionDialog = false
+                        showRestartDialog = true
+                    }
+                ) {
+                    Text(stringResource(R.string.backup_restore_skip))
+                }
+            }
+        )
+    }
+    
+    if (showRestartDialog) {
+        val result = restoreResult // Capture immutable for checking
+        BackupDialog(
+             result = result,
+             onConfirm = {
+                 vm.restartApp(context)
+             }
+        )
+    }
+}
+
+@Composable
+private fun BackupItemCard(
+    item: WebDavBackupItem,
+    isRestoring: Boolean = false,
+    onDelete: (WebDavBackupItem) -> Unit = {},
+    onRestore: (WebDavBackupItem) -> Unit = {},
+) {
+    val isDark = LocalDarkMode.current
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = androidx.compose.material3.CardDefaults.cardColors(
+            containerColor = if (isDark) Color(0xFF141520).copy(alpha = 0.85f) else Color.White.copy(alpha = 0.05f)
+        ),
+        border = BorderStroke(1.dp, if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = item.displayName,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = item.lastModified.toLocalDateTime(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = item.size.fileSizeToString(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = {
+                    onDelete(item)
+                },
+                enabled = !isRestoring,
+                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                    contentColor = Color(0xFFEF4444)
+                )
+            ) {
+                Text(stringResource(R.string.backup_page_delete), fontWeight = FontWeight.SemiBold)
+            }
+            Button(
+                onClick = {
+                    onRestore(item)
+                },
+                enabled = !isRestoring,
+                shape = RoundedCornerShape(12.dp),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                    containerColor = Color.White,
+                    contentColor = Color.Black,
+                    disabledContainerColor = Color.White.copy(alpha = 0.12f),
+                    disabledContentColor = Color.White.copy(alpha = 0.35f),
+                )
+            ) {
+                if (isRestoring) {
+                    CircularWavyProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = Color.Black
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(
+                    if (isRestoring) stringResource(R.string.backup_page_restoring) else stringResource(R.string.backup_page_restore_now),
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImportExportPage(
+    vm: BackupVM
+) {
+    val toaster = LocalToaster.current
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val settings by vm.settings.collectAsStateWithLifecycle()
+    var isExporting by remember { mutableStateOf(false) }
+    var isRestoring by remember { mutableStateOf(false) }
+    var showRestartDialog by remember { mutableStateOf(false) }
+    var showExportContentDialog by remember { mutableStateOf(false) }
+    var selectedExportContent by remember { mutableStateOf<Set<BackupContentOption>?>(null) }
+    var selectedExportKeyIds by remember { mutableStateOf<Set<kotlin.uuid.Uuid>?>(null) }
+
+    var restoreResult by remember { mutableStateOf<me.lucid.domchat.data.sync.WebdavSync.RestoreResult?>(null) }
+    
+    // Permission handling after restore
+    var pendingFeatureAccess by remember {
+        mutableStateOf(PermissionChecker.MissingFeatureAccess())
+    }
+    var showPermissionDialog by remember { mutableStateOf(false) }
+    
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ ->
+        scope.launch {
+            val missing = PermissionChecker.getMissingFeatureAccess(context, vm.getAssistantsSnapshot())
+            if (missing.specialAccesses.isNotEmpty()) {
+                pendingFeatureAccess = PermissionChecker.MissingFeatureAccess(
+                    specialAccesses = missing.specialAccesses
+                )
+                showPermissionDialog = true
+            } else {
+                showRestartDialog = true
+            }
+        }
+    }
+
+    val specialAccessLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        showRestartDialog = true
+    }
+
+    // 导入类型：local 为本地备份，chatbox 为 Chatbox 导入
+    var importType by remember { mutableStateOf("local") }
+    var pendingLocalRestoreUri by remember { mutableStateOf<android.net.Uri?>(null) }
+
+    // 创建文件保存的launcher
+    val createDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        uri?.let { targetUri ->
+            scope.launch {
+                isExporting = true
+                runCatching {
+                    // 导出文件
+                    val exportFile = vm.exportToFile(
+                        selectedContent = selectedExportContent,
+                        selectedKeyIds = selectedExportKeyIds,
+                    )
+
+                    // 复制到用户选择的位置
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(targetUri)?.use { outputStream ->
+                            exportFile.source().buffer().inputStream().use { inputStream ->
+                                inputStream.copyTo(outputStream)
+                            }
+                        }
+                    }
+
+                    // 清理临时文件
+                    withContext(Dispatchers.IO) {
+                        exportFile.delete()
+                    }
+
+                    toaster.show(
+                        context.getString(R.string.backup_page_backup_success),
+                        type = ToastType.Success
+                    )
+                }.onFailure { e ->
+                    e.printStackTrace()
+                    toaster.show(
+                        context.getString(R.string.backup_page_backup_failed, e.message ?: ""),
+                        type = ToastType.Error
+                    )
+                }
+                isExporting = false
+            }
+        }
+    }
+
+    // 创建文件选择的launcher
+    val openDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let { sourceUri ->
+            if (importType == "local") {
+                pendingLocalRestoreUri = sourceUri
+                return@rememberLauncherForActivityResult
+            }
+            scope.launch {
+                isRestoring = true
+                runCatching {
+                    when (importType) {
+                        "chatbox" -> {
+                            val tempFile =
+                                File(context.cacheDir, "temp_chatbox_${System.currentTimeMillis()}.json")
+
+                            try {
+                                withContext(Dispatchers.IO) {
+                                    context.contentResolver.openInputStream(sourceUri)?.use { inputStream ->
+                                        tempFile.sink().buffer().outputStream().use { outputStream ->
+                                            inputStream.copyTo(outputStream)
+                                        }
+                                    }
+                                }
+                                vm.restoreFromChatBox(tempFile)
+                            } finally {
+                                withContext(Dispatchers.IO) {
+                                    tempFile.delete()
+                                }
+                            }
+                        }
+                        "cherry" -> {
+                            val tempFile =
+                                File(context.cacheDir, "temp_cherry_${System.currentTimeMillis()}.zip")
+
+                            try {
+                                withContext(Dispatchers.IO) {
+                                    context.contentResolver.openInputStream(sourceUri)?.use { inputStream ->
+                                        tempFile.sink().buffer().outputStream().use { outputStream ->
+                                            inputStream.copyTo(outputStream)
+                                        }
+                                    }
+                                }
+                                vm.restoreFromCherryStudio(tempFile)
+                            } finally {
+                                withContext(Dispatchers.IO) {
+                                    tempFile.delete()
+                                }
+                            }
+                        }
+                    }
+
+                    toaster.show(
+                        context.getString(R.string.backup_page_restore_success),
+                        type = ToastType.Success
+                    )
+                }.onFailure { e ->
+                    e.printStackTrace()
+                    toaster.show(
+                        context.getString(R.string.backup_page_restore_failed, e.message ?: ""),
+                        type = ToastType.Error
+                    )
+                }
+                isRestoring = false
+            }
+        }
+    }
+
+    pendingLocalRestoreUri?.let { sourceUri ->
+        AetherDestructiveConfirmDialog(
+            title = stringResource(R.string.backup_page_restore_overwrite_title),
+            consequence = stringResource(R.string.backup_page_restore_overwrite_consequence),
+            confirmLabel = stringResource(R.string.backup_page_restore_now),
+            onDismiss = { pendingLocalRestoreUri = null },
+            onConfirm = {
+                pendingLocalRestoreUri = null
+                scope.launch {
+                    isRestoring = true
+                    runCatching {
+                        val tempFile =
+                            File(context.cacheDir, "temp_restore_${System.currentTimeMillis()}.zip")
+                        withContext(Dispatchers.IO) {
+                            context.contentResolver.openInputStream(sourceUri)?.use { inputStream ->
+                                tempFile.sink().buffer().outputStream().use { outputStream ->
+                                    inputStream.copyTo(outputStream)
+                                }
+                            }
+                        }
+                        val result = vm.restoreFromLocalFile(tempFile)
+                        restoreResult = result
+                        withContext(Dispatchers.IO) {
+                            tempFile.delete()
+                        }
+                        toaster.show(
+                            context.getString(R.string.backup_page_restore_success),
+                            type = ToastType.Success
+                        )
+                        val missing = PermissionChecker.getMissingFeatureAccess(
+                            context,
+                            vm.getAssistantsSnapshot()
+                        )
+                        if (!missing.isEmpty) {
+                            pendingFeatureAccess = missing
+                            showPermissionDialog = true
+                        } else {
+                            showRestartDialog = true
+                        }
+                    }.onFailure { e ->
+                        e.printStackTrace()
+                        toaster.show(
+                            context.getString(R.string.backup_page_restore_failed, e.message ?: ""),
+                            type = ToastType.Error
+                        )
+                    }
+                    isRestoring = false
+                }
+            },
+        )
+    }
+
+    if (showExportContentDialog) {
+        ExportContentSelectionDialog(
+            providers = settings.providers,
+            onDismiss = { showExportContentDialog = false },
+            onConfirm = { selectedContent, selectedKeys ->
+                showExportContentDialog = false
+                selectedExportContent = selectedContent
+                selectedExportKeyIds = selectedKeys
+                val timestamp = LocalDateTime.now()
+                    .format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                val fileName = if (selectedContent == null) "Domchat_all_in_one_$timestamp.zip" else "Domchat_backup_$timestamp.zip"
+                createDocumentLauncher.launch(fileName)
+            }
+        )
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 112.dp)
+    ) {
+        item {
+            SettingsGroup(
+                title = stringResource(R.string.backup_page_local_backup_export),
+                horizontalPadding = 0.dp,
+                titleStartPadding = 4.dp,
+            ) {
+                SettingGroupItem(
+                    title = stringResource(R.string.backup_page_all_in_one_export),
+                    subtitle = if (isExporting && selectedExportContent == null) {
+                        stringResource(R.string.backup_page_exporting)
+                    } else {
+                        stringResource(R.string.backup_page_all_in_one_export_desc)
+                    },
+                    icon = {
+                        if (isExporting && selectedExportContent == null) {
+                            CircularWavyProgressIndicator(modifier = Modifier.size(24.dp))
+                        } else {
+                            Icon(Icons.Rounded.Inventory2, null)
+                        }
+                    },
+                    onClick = {
+                        if (!isExporting) {
+                            selectedExportContent = null
+                            selectedExportKeyIds = null
+                            val timestamp = LocalDateTime.now()
+                                .format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                            createDocumentLauncher.launch("Domchat_all_in_one_$timestamp.zip")
+                        }
+                    }
+                )
+                SettingGroupItem(
+                    title = stringResource(R.string.backup_page_custom_backup_export),
+                    subtitle = if (isExporting && selectedExportContent != null) {
+                        stringResource(R.string.backup_page_exporting)
+                    } else {
+                        stringResource(R.string.backup_page_custom_backup_export_desc)
+                    },
+                    icon = {
+                        if (isExporting && selectedExportContent != null) {
+                            CircularWavyProgressIndicator(modifier = Modifier.size(24.dp))
+                        } else {
+                            Icon(Icons.Rounded.FileUpload, null)
+                        }
+                    },
+                    onClick = {
+                        if (!isExporting) {
+                            showExportContentDialog = true
+                        }
+                    }
+                )
+                SettingGroupItem(
+                    title = stringResource(R.string.backup_page_local_backup_import),
+                    subtitle = if (isRestoring && importType == "local") {
+                        stringResource(R.string.backup_page_importing)
+                    } else {
+                        stringResource(R.string.backup_page_import_desc)
+                    },
+                    icon = {
+                        if (isRestoring && importType == "local") {
+                            CircularWavyProgressIndicator(modifier = Modifier.size(24.dp))
+                        } else {
+                            Icon(Icons.Rounded.SystemUpdateAlt, null)
+                        }
+                    },
+                    onClick = {
+                        if (!isRestoring) {
+                            importType = "local"
+                            openDocumentLauncher.launch(
+                                arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream", "*/*")
+                            )
+                        }
+                    }
+                )
+            }
+        }
+
+        item {
+            SettingsGroup(
+                title = stringResource(R.string.backup_page_import_from_other_app),
+                horizontalPadding = 0.dp,
+                titleStartPadding = 4.dp,
+            ) {
+                SettingGroupItem(
+                    title = stringResource(R.string.backup_page_import_from_chatbox),
+                    subtitle = stringResource(R.string.backup_page_import_chatbox_desc),
+                    icon = {
+                        if (isRestoring && importType == "chatbox") {
+                            CircularWavyProgressIndicator(modifier = Modifier.size(24.dp))
+                        } else {
+                            Icon(Icons.Rounded.SystemUpdateAlt, null)
+                        }
+                    },
+                    onClick = {
+                        if (!isRestoring) {
+                            importType = "chatbox"
+                            openDocumentLauncher.launch(arrayOf("application/json", "text/plain"))
+                        }
+                    }
+                )
+                SettingGroupItem(
+                    title = stringResource(R.string.backup_page_import_from_cherry_studio),
+                    subtitle = stringResource(R.string.backup_page_import_cherry_studio_desc),
+                    icon = {
+                        if (isRestoring && importType == "cherry") {
+                            CircularWavyProgressIndicator(modifier = Modifier.size(24.dp))
+                        } else {
+                            Icon(Icons.Rounded.Folder, null)
+                        }
+                    },
+                    onClick = {
+                        if (!isRestoring) {
+                            importType = "cherry"
+                            openDocumentLauncher.launch(
+                                arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")
+                            )
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    // Permission explanation dialog
+    if (showPermissionDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                // User dismissed - proceed without permissions
+                showPermissionDialog = false
+                showRestartDialog = true
+            },
+            title = { Text(stringResource(R.string.backup_restore_permissions_required)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.backup_restore_permissions_message))
+                    PermissionChecker.getFeatureAccessDescriptions(pendingFeatureAccess).forEach { description ->
+                        val desc = description
+                        Text("- $desc", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text(
+                        stringResource(R.string.backup_restore_permissions_follow_up),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showPermissionDialog = false
+                        when {
+                            pendingFeatureAccess.runtimePermissions.isNotEmpty() -> {
+                                permissionLauncher.launch(pendingFeatureAccess.runtimePermissions.toTypedArray())
+                            }
+                            pendingFeatureAccess.specialAccesses.isNotEmpty() -> {
+                                val nextAccess = pendingFeatureAccess.specialAccesses.firstOrNull()
+                                    ?: return@Button
+                                specialAccessLauncher.launch(
+                                    PermissionChecker.createSpecialAccessIntent(nextAccess)
+                                )
+                            }
+                            else -> {
+                                showRestartDialog = true
+                            }
+                        }
+                    }
+                ) {
+                    Text(
+                        if (pendingFeatureAccess.runtimePermissions.isNotEmpty()) {
+                            stringResource(R.string.backup_restore_grant_permissions)
+                        } else {
+                            stringResource(R.string.open_settings)
+                        }
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showPermissionDialog = false
+                        showRestartDialog = true
+                    }
+                ) {
+                    Text(stringResource(R.string.backup_restore_skip))
+                }
+            }
+        )
+    }
+    
+    // 重启对话框
+    if (showRestartDialog) {
+        val result = restoreResult // Capture immutable for checking
+        BackupDialog(
+             result = result,
+             onConfirm = {
+                 vm.restartApp(context)
+             }
+        )
+    }
+}
+
+@Composable
+private fun BackupDialog(
+    result: me.lucid.domchat.data.sync.WebdavSync.RestoreResult?,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = {}, // Disallow dismissing by clicking outside
+        title = { Text(stringResource(R.string.backup_page_restart_app)) },
+        text = { 
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(R.string.backup_page_restart_desc))
+                
+                result?.let {
+                    if (it.sanitization.skippedRows > 0 || it.settingsCleanup.totalIssuesFixed > 0 || it.settingsCleanup.unsupportedZipEntriesBytes > 0) {                        Card(
+                            colors = androidx.compose.material3.CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp)) {
+                                Text(
+                                    text = stringResource(R.string.backup_restore_report_title),
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                                if (it.sanitization.skippedRows > 0) {
+                                    Text(
+                                        text = stringResource(
+                                            R.string.backup_restore_report_removed_items,
+                                            it.sanitization.skippedRows
+                                        )
+                                    )
+                                }
+                                if (it.settingsCleanup.totalIssuesFixed > 0) {
+                                    Text(
+                                        text = stringResource(
+                                            R.string.backup_restore_report_fixed_settings,
+                                            it.settingsCleanup.totalIssuesFixed
+                                        )
+                                    )
+                                }
+                                if (it.settingsCleanup.unsupportedZipEntriesBytes > 0) {
+                                    Text(
+                                        text = stringResource(
+                                            R.string.backup_restore_report_cleaned_data,
+                                            it.settingsCleanup.unsupportedZipEntriesBytes.fileSizeToString()
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    val envTargets = it.workspacesMetadata.filter { meta -> meta.hasRootfs }
+                    if (envTargets.isNotEmpty()) {
+                        Card(
+                            colors = androidx.compose.material3.CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.backup_restore_workspaces_env_title),
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                                Text(
+                                    text = stringResource(
+                                        R.string.backup_restore_workspaces_env_desc,
+                                        envTargets.size
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm
+            ) {
+                Text(stringResource(R.string.backup_page_restart_app))
+            }
+        },
+    )
+}

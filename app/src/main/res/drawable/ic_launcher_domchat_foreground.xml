@@ -1,0 +1,107 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Ambient Luminous Glow Behind Emblem -->
+    <path
+        android:pathData="M54,22 C68,22 82,34 82,54 C82,72 68,84 54,84 C40,84 26,72 26,54 C26,34 40,22 54,22 Z"
+        android:fillAlpha="0.18">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="54"
+                android:centerY="54"
+                android:gradientRadius="36"
+                android:startColor="#8A2BE2"
+                android:centerColor="#00E5FF"
+                android:endColor="#00000000" />
+        </aapt:attr>
+    </path>
+
+    <!-- Outer Precision Facet - Left Wing -->
+    <path
+        android:pathData="M54,26 L30,78 L42,78 L49,62 L54,50 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="30"
+                android:startY="78"
+                android:endX="54"
+                android:endY="26"
+                android:startColor="#B0BEC5"
+                android:centerColor="#ECEFF1"
+                android:endColor="#FFFFFF" />
+        </aapt:attr>
+    </path>
+
+    <!-- Outer Precision Facet - Right Wing -->
+    <path
+        android:pathData="M54,26 L78,78 L66,78 L59,62 L54,50 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="78"
+                android:startY="78"
+                android:endX="54"
+                android:endY="26"
+                android:startColor="#78909C"
+                android:centerColor="#CFD8DC"
+                android:endColor="#FFFFFF" />
+        </aapt:attr>
+    </path>
+
+    <!-- Central Aether Floating Prism Crystal -->
+    <path
+        android:pathData="M54,38 L62,54 L54,70 L46,54 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="46"
+                android:startY="38"
+                android:endX="62"
+                android:endY="70"
+                android:startColor="#00E5FF"
+                android:centerColor="#FFFFFF"
+                android:endColor="#7C4DFF" />
+        </aapt:attr>
+    </path>
+
+    <!-- Liquid Glass Specular Edge Light Highlight -->
+    <path
+        android:pathData="M54,26 L30,78 M54,26 L78,78"
+        android:strokeWidth="1.2"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="54"
+                android:startY="26"
+                android:endX="54"
+                android:endY="78"
+                android:startColor="#FFFFFF"
+                android:centerColor="#80FFFFFF"
+                android:endColor="#15FFFFFF" />
+        </aapt:attr>
+    </path>
+
+    <!-- Horizontal Refraction Bridge -->
+    <path
+        android:pathData="M44,62 L64,62"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="44"
+                android:startY="62"
+                android:endX="64"
+                android:endY="62"
+                android:startColor="#00E5FF"
+                android:centerColor="#FFFFFF"
+                android:endColor="#8A2BE2" />
+        </aapt:attr>
+    </path>
+</vector>

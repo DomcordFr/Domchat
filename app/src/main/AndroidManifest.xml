@@ -1,0 +1,295 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:tools="http://schemas.android.com/tools">
+
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.CAMERA" />
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+  <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+  <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+  <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+  <uses-permission android:name="android.permission.VIBRATE" />
+  <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+  <uses-feature
+    android:name="android.hardware.camera"
+    android:required="false" />
+  <uses-feature
+    android:name="android.hardware.camera.autofocus"
+    android:required="false" />
+
+  <application
+        android:name=".DomChatApp"
+    android:allowBackup="true"
+    android:appCategory="productivity"
+    android:largeHeap="true"
+    android:dataExtractionRules="@xml/data_extraction_rules"
+    android:enableOnBackInvokedCallback="true"
+    android:fullBackupContent="@xml/backup_rules"
+    android:icon="@mipmap/ic_launcher_domchat"
+    android:roundIcon="@mipmap/ic_launcher_domchat_round"
+    android:label="@string/app_name"
+    android:supportsRtl="true"
+    android:theme="@style/Theme.Domchat"
+        android:usesCleartextTraffic="true"
+    tools:targetApi="33">
+    <!-- AGP lint can fail to resolve ComponentActivity/Glance inheritance here during lintVitalRelease. -->
+    <activity
+      android:name=".RouteActivity"
+      android:configChanges="keyboardHidden|orientation|screenSize"
+      android:exported="true"
+      android:importantForAutofill="noExcludeDescendants"
+      android:theme="@style/Theme.Domchat"
+      android:windowSoftInputMode="adjustResize"
+      tools:ignore="Instantiatable">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+      <meta-data
+          android:name="android.app.shortcuts"
+          android:resource="@xml/shortcuts" />
+    </activity>
+
+    <activity
+        android:name=".ui.activity.ShareWithCharacterActivity"
+        android:exported="true"
+        android:label="@string/share_handler_page_title"
+        android:theme="@android:style/Theme.Translucent.NoTitleBar"
+        tools:ignore="Instantiatable">
+      <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="*/*" />
+      </intent-filter>
+      <intent-filter>
+        <action android:name="android.intent.action.SEND_MULTIPLE" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="*/*" />
+      </intent-filter>
+    </activity>
+
+    <activity
+        android:name=".ui.activity.AskDomChatShareActivity"
+        android:exported="true"
+        android:label="@string/text_selection_menu_label"
+        android:theme="@style/Theme.Domchat.Translucent"
+        android:configChanges="keyboardHidden|orientation|screenSize"
+        android:windowSoftInputMode="adjustResize"
+        tools:ignore="Instantiatable">
+      <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="*/*" />
+      </intent-filter>
+      <intent-filter>
+        <action android:name="android.intent.action.SEND_MULTIPLE" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="*/*" />
+      </intent-filter>
+    </activity>
+
+    <activity
+        android:name=".ui.activity.ShortcutHandlerActivity"
+        android:exported="true"
+        android:theme="@android:style/Theme.Translucent.NoTitleBar"
+        tools:ignore="Instantiatable">
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:scheme="domchat" android:host="assistant" />
+            <data android:scheme="aetherchat" android:host="assistant" />
+            <data android:scheme="lastchat" android:host="assistant" />
+        </intent-filter>
+    </activity>
+
+    <activity
+        android:name=".ui.activity.McpOAuthRedirectActivity"
+        android:exported="true"
+        android:theme="@android:style/Theme.Translucent.NoTitleBar">
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data
+                android:host="mcp"
+                android:pathPrefix="/oauth/"
+                android:scheme="domchat" />
+            <data
+                android:host="mcp"
+                android:pathPrefix="/oauth/"
+                android:scheme="aetherchat" />
+            <data
+                android:host="mcp"
+                android:pathPrefix="/oauth/"
+                android:scheme="lastchat" />
+        </intent-filter>
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data
+                android:host="mcp-oauth-callback"
+                android:scheme="domchat" />
+            <data
+                android:host="mcp-oauth-callback"
+                android:scheme="aetherchat" />
+            <data
+                android:host="mcp-oauth-callback"
+                android:scheme="lastchat" />
+        </intent-filter>
+    </activity>
+
+    <!-- Text Selection Integration - "Ask DomChat" in system text selection menu -->
+    <activity
+        android:name=".ui.activity.TextSelectionActivity"
+        android:exported="true"
+        android:label="@string/text_selection_menu_label"
+        android:theme="@style/Theme.Domchat.Translucent"
+        android:configChanges="keyboardHidden|orientation|screenSize"
+        android:windowSoftInputMode="adjustResize"
+        tools:ignore="Instantiatable">
+        <intent-filter>
+            <action android:name="android.intent.action.PROCESS_TEXT" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:mimeType="text/plain" />
+        </intent-filter>
+    </activity>
+
+
+    <service
+        android:name=".service.WebServerService"
+        android:exported="false"
+        android:foregroundServiceType="specialUse">
+      <property
+          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+          android:value="Persistent local HTTP server that serves the Domchat web UI on the LAN" />
+    </service>
+
+    <service
+        android:name="androidx.work.impl.foreground.SystemForegroundService"
+        android:foregroundServiceType="dataSync"
+        tools:node="merge" />
+
+    <service
+        android:name=".service.AssistantNotificationListener"
+        android:label="Assistant Notification Listener"
+        android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+        android:exported="true">
+        <intent-filter>
+            <action android:name="android.service.notification.NotificationListenerService" />
+        </intent-filter>
+    </service>
+
+    <!-- Digital Assistant: makes DomChat selectable as the default assistant app -->
+    <service
+        android:name=".service.assist.DomChatVoiceInteractionService"
+        android:label="@string/assistant_overlay_service_label"
+        android:permission="android.permission.BIND_VOICE_INTERACTION"
+        android:exported="true">
+        <meta-data
+            android:name="android.voice_interaction"
+            android:resource="@xml/domchat_voice_interaction_service" />
+        <intent-filter>
+            <action android:name="android.service.voice.VoiceInteractionService" />
+        </intent-filter>
+    </service>
+
+    <service
+        android:name=".service.assist.DomChatVoiceInteractionSessionService"
+        android:permission="android.permission.BIND_VOICE_INTERACTION"
+        android:exported="true" />
+
+    <service
+        android:name=".service.assist.DomChatRecognitionService"
+        android:exported="true">
+        <intent-filter>
+            <action android:name="android.speech.RecognitionService" />
+        </intent-filter>
+        <meta-data
+            android:name="android.speech"
+            android:resource="@xml/domchat_recognition_service" />
+    </service>
+
+    <service
+        android:name=".service.workspace.WorkspaceEnvironmentService"
+        android:exported="false"
+        android:foregroundServiceType="dataSync" />
+
+    <!-- Floating assistant overlay launched by the assist gesture -->
+    <activity
+        android:name=".ui.activity.AssistantOverlayActivity"
+        android:exported="false"
+        android:theme="@style/Theme.Domchat.Translucent"
+        android:excludeFromRecents="true"
+        android:launchMode="singleTask"
+        android:taskAffinity="com.domchat.app.assistant"
+        android:configChanges="keyboardHidden|orientation|screenSize"
+        android:windowSoftInputMode="adjustResize"
+        tools:ignore="Instantiatable" />
+
+    <provider
+      android:name="androidx.core.content.FileProvider"
+      android:authorities="${applicationId}.fileprovider"
+      android:exported="false"
+      android:grantUriPermissions="true">
+      <meta-data
+        android:name="android.support.FILE_PROVIDER_PATHS"
+        android:resource="@xml/file_paths" />
+    </provider>
+
+    <provider
+      android:name="androidx.startup.InitializationProvider"
+      android:authorities="${applicationId}.androidx-startup"
+      android:exported="false"
+      tools:node="merge">
+      <meta-data
+        android:name="androidx.work.WorkManagerInitializer"
+        android:value="androidx.startup"
+        tools:node="remove" />
+    </provider>
+    <receiver
+        android:name=".service.ScheduledMessageReceiver"
+        android:exported="false" />
+
+    <!-- Assistant Widget -->
+    <receiver
+        android:name=".widget.AssistantWidgetReceiver"
+        android:exported="true"
+        android:label="@string/widget_assistant_name"
+        tools:ignore="Instantiatable">
+      <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+      </intent-filter>
+      <meta-data
+          android:name="android.appwidget.provider"
+          android:resource="@xml/widget_assistant_info" />
+    </receiver>
+
+    <activity
+        android:name=".widget.WidgetConfigActivity"
+        android:exported="true"
+        android:theme="@style/Theme.Domchat"
+        tools:ignore="Instantiatable">
+      <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+      </intent-filter>
+    </activity>
+  </application>
+
+  <queries>
+    <intent>
+      <action android:name="android.intent.action.TTS_SERVICE" />
+    </intent>
+    <intent>
+      <action android:name="android.speech.RecognitionService" />
+    </intent>
+  </queries>
+</manifest>

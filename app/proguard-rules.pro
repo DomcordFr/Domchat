@@ -1,0 +1,64 @@
+# Add project specific ProGuard rules here.
+# You can control the set of applied configuration files using the
+# proguardFiles setting in build.gradle.
+#
+# For more details, see
+#   http://developer.android.com/guide/developing/tools/proguard.html
+
+# If your project uses WebView with JS, uncomment the following
+# and specify the fully qualified class name to the JavaScript interface
+# class:
+#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
+#   public *;
+#}
+
+# Uncomment this to preserve the line number information for
+# debugging stack traces.
+-keepattributes SourceFile,LineNumberTable
+
+# If you keep the line number information, uncomment this to
+# hide the original source file name.
+#-renamesourcefileattribute SourceFile
+
+# keep kotlinx serializable classes
+-keep @kotlinx.serialization.Serializable class * {*;}
+
+# keep jlatexmath
+-keep class ru.noties.jlatexmath.** {*;}
+
+# Ktor pulls a JVM-only debugger probe which references java.lang.management.
+# Those types don't exist on Android and are safe to ignore for release builds.
+-dontwarn java.lang.management.ManagementFactory
+-dontwarn java.lang.management.RuntimeMXBean
+
+# The embedded web UI is runtime-only: Android starts a foreground service,
+# Ktor serves bundled assets from AssetManager, and the browser talks to
+# kotlinx-serialized DTOs over local HTTP/SSE. Keep this path intact under R8.
+-keep class me.lucid.domchat.web.** { *; }
+-keep class me.lucid.domchat.service.WebServerService { *; }
+
+# Linux workspace shell uses ProcessBuilder plus Termux terminal JNI. R8 does not
+# rewrite native proot binaries, but keep this boundary intact in release builds.
+-keep class me.lucid.workspace.** { *; }
+-keep class me.lucid.domchat.ui.pages.extensions.workspace.** { *; }
+-keep class com.termux.terminal.** { *; }
+-keep class com.termux.view.** { *; }
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
+-dontwarn com.termux.**
+
+# On-device embeddings (EmbeddingGemma via the AI Edge RAG library). The library ships no consumer
+# R8 rules and reaches its model/proto classes through name-based JNI + native RegisterNatives
+# callbacks, so keep the RAG + MediaPipe boundary intact in release builds.
+-keep class com.google.ai.edge.litertlm.** { *; }
+-keep class com.google.ai.edge.localagents.** { *; }
+-keep class com.google.mediapipe.** { *; }
+-dontwarn com.google.ai.edge.litertlm.**
+-dontwarn com.google.ai.edge.localagents.**
+-dontwarn com.google.mediapipe.**
+
+-dontobfuscate
+
+# Tasks GenAI (AutoValue/JavaPoet) references javax.lang.model which is not on Android
+-dontwarn javax.lang.model.**

@@ -1,0 +1,349 @@
+package me.lucid.domchat
+
+import android.app.Application
+import android.util.Log
+import androidx.core.app.NotificationChannelCompat
+import androidx.core.app.NotificationManagerCompat
+import com.google.firebase.crashlytics.FirebaseCrashlytics
+import com.google.firebase.remoteconfig.FirebaseRemoteConfig
+import com.google.firebase.remoteconfig.remoteConfigSettings
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import me.lucid.common.android.appTempFolder
+import me.lucid.domchat.di.appModule
+import me.lucid.domchat.di.dataSourceModule
+import me.lucid.domchat.di.repositoryModule
+import me.lucid.domchat.di.viewModelModule
+import me.lucid.domchat.utils.DatabaseUtil
+import org.koin.android.ext.android.get
+import org.koin.android.ext.koin.androidContext
+import org.koin.android.ext.koin.androidLogger
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import me.lucid.domchat.data.datastore.SettingsStore
+import me.lucid.domchat.data.datastore.syncInstalledLocalModelsToSettings
+import me.lucid.domchat.data.datastore.withRecoveredAssistantsFromConversations
+import me.lucid.domchat.data.ai.models.ModelMetadataResolver
+import me.lucid.domchat.data.ai.models.ModelCatalogService
+import me.lucid.domchat.data.ai.models.mergeCatalogIntoSettings
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import me.lucid.domchat.service.CHAT_STORAGE_MAINTENANCE_WORK_NAME
+import me.lucid.domchat.service.ChatStorageMaintenanceWorker
+import me.lucid.domchat.service.MemoryConsolidationWorker
+import me.lucid.domchat.service.SPONTANEOUS_NOTIFICATION_CHANNEL_ID
+import me.lucid.domchat.service.SPONTANEOUS_WORK_INTERVAL_MINUTES
+import me.lucid.domchat.service.SPONTANEOUS_WORK_NAME
+import me.lucid.domchat.service.SpontaneousWorker
+import me.lucid.domchat.service.WebServerService
+import me.lucid.domchat.service.initializeAetherWorkManager
+import me.lucid.domchat.data.search.AndroidBingSearchClient
+import java.util.concurrent.TimeUnit
+import org.koin.core.context.startKoin
+import me.lucid.common.platform.PlatformHttpClient
+import me.lucid.common.inference.LocalInferenceManager
+import me.lucid.domchat.di.SEARCH_PLATFORM_HTTP_CLIENT
+import me.lucid.domchat.utils.acceptLanguageHeader
+import me.lucid.search.SearchService
+import org.koin.core.qualifier.named
+
+import coil3.ImageLoader
+import coil3.PlatformContext
+import coil3.SingletonImageLoader
+import me.lucid.domchat.ui.image.AppImageLoaderFactory
+import me.lucid.domchat.ui.modifier.isHazeDetachedCoordinateCrash
+
+private const val TAG = "DomChatApp"
+private const val MEMORY_MAINTENANCE_WORK_NAME = "memory_consolidation_automatic"
+
+const val CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID = "chat_completed"
+const val WEB_SERVER_NOTIFICATION_CHANNEL_ID = "web_server"
+const val LOCAL_MODEL_DOWNLOAD_NOTIFICATION_CHANNEL_ID = "local_model_download"
+const val WORKSPACE_ENVIRONMENT_NOTIFICATION_CHANNEL_ID = "workspace_environment"
+
+typealias AetherChatApp = DomChatApp
+
+class DomChatApp : Application(), SingletonImageLoader.Factory {
+    companion object {
+        lateinit var instance: DomChatApp
+            private set
+    }
+
+    override fun newImageLoader(context: PlatformContext): ImageLoader {
+        return get<AppImageLoaderFactory>().create(context)
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+        startKoin {
+            androidLogger()
+            androidContext(this@DomChatApp)
+            modules(appModule, viewModelModule, dataSourceModule, repositoryModule)
+        }
+        SingletonImageLoader.setSafe(this)
+        installHazeDetachedCoordinateCrashGuard()
+
+        // set cursor window size (4MB avoids native virtual memory exhaustion)
+        DatabaseUtil.setCursorWindowSize(4 * 1024 * 1024)
+
+        // delete temp files
+        deleteTempFiles()
+
+        // Asynchronously defer heavy initialization off the Main Thread so startup is instant
+        get<AppScope>().launch(Dispatchers.IO) {
+            val searchHttpClient = get<PlatformHttpClient>(named(SEARCH_PLATFORM_HTTP_CLIENT))
+            SearchService.installPlatformHttpClient(searchHttpClient)
+            SearchService.installBingSearchClient(AndroidBingSearchClient(searchHttpClient))
+            SearchService.installAcceptLanguageProvider { acceptLanguageHeader() }
+
+            this@DomChatApp.createNotificationChannel()
+
+            // Init remote config
+            get<FirebaseRemoteConfig>().apply {
+                setConfigSettingsAsync(remoteConfigSettings {
+                    minimumFetchIntervalInSeconds = 1800
+                })
+                setDefaultsAsync(R.xml.remote_config_defaults)
+                fetchAndActivate()
+            }
+
+            val workManager = initializeAetherWorkManager()
+            workManager?.enqueueUniquePeriodicWork(
+                SPONTANEOUS_WORK_NAME,
+                ExistingPeriodicWorkPolicy.UPDATE,
+                PeriodicWorkRequestBuilder<SpontaneousWorker>(
+                    SPONTANEOUS_WORK_INTERVAL_MINUTES,
+                    TimeUnit.MINUTES
+                )
+                    .setConstraints(
+                        Constraints.Builder()
+                            .setRequiredNetworkType(NetworkType.CONNECTED)
+                            .build()
+                    )
+                    .build()
+            )
+
+            workManager?.enqueueUniquePeriodicWork(
+                CHAT_STORAGE_MAINTENANCE_WORK_NAME,
+                ExistingPeriodicWorkPolicy.UPDATE,
+                PeriodicWorkRequestBuilder<ChatStorageMaintenanceWorker>(
+                    1,
+                    TimeUnit.DAYS
+                )
+                    .setConstraints(
+                        Constraints.Builder()
+                            .setRequiredNetworkType(NetworkType.CONNECTED)
+                            .build()
+                    )
+                    .build()
+            )
+
+            // Post-reply jobs do the normal Core + Episodic consolidation. This periodic scan is the
+            // durable safety net for process death, provider failures, and restored data.
+            workManager?.apply {
+                cancelUniqueWork("memory_consolidation")
+                cancelUniqueWork("memory_maintenance_v3")
+                enqueueUniquePeriodicWork(
+                    MEMORY_MAINTENANCE_WORK_NAME,
+                    ExistingPeriodicWorkPolicy.UPDATE,
+                    PeriodicWorkRequestBuilder<MemoryConsolidationWorker>(6, TimeUnit.HOURS).build(),
+                )
+            }
+        }
+        
+        // Update app shortcuts when recently used assistants change
+        val appShortcutManager = me.lucid.domchat.utils.AppShortcutManager(this)
+        get<AppScope>().launch {
+            get<SettingsStore>().settingsFlow
+                .map { Triple(it.recentlyUsedAssistants, it.assistants, it.init) }
+                .distinctUntilChanged()
+                .collect { (recentlyUsed, assistants, isInit) ->
+                    if (!isInit) {
+                        withContext(Dispatchers.IO) {
+                            appShortcutManager.updateAssistantShortcuts(recentlyUsed, assistants)
+                        }
+                    }
+                }
+        }
+
+        // Restricted FGS types cannot start from BOOT_COMPLETED / WorkManager process starts.
+        // Defer until the app is in the foreground (Activity), which is a permitted start path.
+        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) {
+                get<AppScope>().launch {
+                    val settings = get<SettingsStore>().settingsFlowRaw.first()
+                    if (settings.webServerEnabled) {
+                        WebServerService.start(this@DomChatApp, settings.webServerPort)
+                    }
+                }
+            }
+        })
+        
+        get<AppScope>().launch(Dispatchers.IO) {
+            runCatching {
+                val settingsStore = get<SettingsStore>()
+                val conversationRepo = get<me.lucid.domchat.data.repository.ConversationRepository>()
+                val settings = settingsStore.settingsFlow.first { !it.init }
+                val recovered = settings.withRecoveredAssistantsFromConversations(
+                    conversationRepo.getDistinctAssistantIds(),
+                )
+                if (recovered != settings) {
+                    Log.i(TAG, "Restored ${recovered.assistants.size - settings.assistants.size} assistants from existing chats")
+                    settingsStore.update(recovered)
+                }
+            }.onFailure {
+                Log.w(TAG, "Conversation assistant recovery failed", it)
+            }
+            runCatching {
+                val catalogService = get<ModelCatalogService>()
+                catalogService.warmUp()
+                val snapshot = catalogService.snapshotOrNull() ?: return@runCatching
+                val settingsStore = get<SettingsStore>()
+                val settings = settingsStore.settingsFlow.first { !it.init }
+                val merged = mergeCatalogIntoSettings(
+                    settings = settings,
+                    snapshot = snapshot,
+                    resolver = get<ModelMetadataResolver>(),
+                )
+                if (merged != settings) {
+                    settingsStore.update(merged)
+                }
+            }.onFailure {
+                Log.w(TAG, "Model catalog warm-up failed", it)
+            }
+            runCatching {
+                syncInstalledLocalModelsToSettings(
+                    installed = get<me.lucid.locallm.LocalModelStore>().current(),
+                    totalRamGb = me.lucid.locallm.MemoryGuard.deviceTotalRamGb(this@DomChatApp),
+                    settingsStore = get<SettingsStore>(),
+                    catalogSnapshot = get<ModelCatalogService>().snapshotFlow.value,
+                )
+            }.onFailure {
+                Log.w(TAG, "Local model metadata sync failed", it)
+            }
+        }
+    }
+
+    private fun installHazeDetachedCoordinateCrashGuard() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            if (isHazeDetachedCoordinateCrash(throwable)) {
+                Log.w(TAG, "Suppressed Haze LayoutCoordinate crash after detach", throwable)
+                runCatching { get<FirebaseCrashlytics>().recordException(throwable) }
+                return@setDefaultUncaughtExceptionHandler
+            }
+            previous?.uncaughtException(thread, throwable)
+        }
+    }
+
+    private fun deleteTempFiles() {
+        get<AppScope>().launch(Dispatchers.IO) {
+            val dir = appTempFolder
+            if (dir.exists()) {
+                dir.deleteRecursively()
+            }
+        }
+    }
+
+    private fun createNotificationChannel() {
+        val notificationManager = NotificationManagerCompat.from(this)
+        val chatCompletedChannel = NotificationChannelCompat
+            .Builder(
+                CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID,
+                NotificationManagerCompat.IMPORTANCE_HIGH
+            )
+            .setName(getString(R.string.notification_channel_chat_completed))
+            .setVibrationEnabled(true)
+            .build()
+        val webServerChannel = NotificationChannelCompat
+            .Builder(
+                WEB_SERVER_NOTIFICATION_CHANNEL_ID,
+                NotificationManagerCompat.IMPORTANCE_LOW
+            )
+            .setName(getString(R.string.notification_channel_web_server))
+            .setVibrationEnabled(false)
+            .build()
+        val spontaneousChannel = NotificationChannelCompat
+            .Builder(
+                SPONTANEOUS_NOTIFICATION_CHANNEL_ID,
+                NotificationManagerCompat.IMPORTANCE_DEFAULT
+            )
+            .setName(getString(R.string.notification_channel_spontaneous))
+            .setVibrationEnabled(true)
+            .build()
+        val localModelDownloadChannel = NotificationChannelCompat
+            .Builder(
+                LOCAL_MODEL_DOWNLOAD_NOTIFICATION_CHANNEL_ID,
+                NotificationManagerCompat.IMPORTANCE_LOW
+            )
+            .setName(getString(R.string.notification_channel_local_model_downloads))
+            .setVibrationEnabled(false)
+            .build()
+        val workspaceEnvironmentChannel = NotificationChannelCompat
+            .Builder(
+                WORKSPACE_ENVIRONMENT_NOTIFICATION_CHANNEL_ID,
+                NotificationManagerCompat.IMPORTANCE_LOW
+            )
+            .setName(getString(R.string.notification_channel_workspace_environment))
+            .setVibrationEnabled(false)
+            .build()
+        notificationManager.createNotificationChannel(chatCompletedChannel)
+        notificationManager.createNotificationChannel(webServerChannel)
+        notificationManager.createNotificationChannel(spontaneousChannel)
+        notificationManager.createNotificationChannel(localModelDownloadChannel)
+        notificationManager.createNotificationChannel(workspaceEnvironmentChannel)
+    }
+
+    override fun onTerminate() {
+        super.onTerminate()
+        get<AppScope>().cancel()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+            level == android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN
+        ) {
+            runCatching { get<LocalInferenceManager>().requestEviction() }
+            runCatching { coil3.SingletonImageLoader.get(this).memoryCache?.clear() }
+            runCatching { get<me.lucid.domchat.service.ChatService>().checkAllConversationsReferences() }
+            runCatching { me.lucid.domchat.data.model.clearCompiledRegexCache() }
+            runCatching { me.lucid.domchat.service.assist.AssistScreenHolder.clear() }
+        }
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
+            runCatching { get<me.lucid.domchat.data.ai.AILoggingManager>().clearLogs() }
+        }
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        runCatching { get<LocalInferenceManager>().requestEviction() }
+        runCatching { coil3.SingletonImageLoader.get(this).memoryCache?.clear() }
+        runCatching { get<me.lucid.domchat.service.ChatService>().checkAllConversationsReferences() }
+        runCatching { me.lucid.domchat.data.model.clearCompiledRegexCache() }
+        runCatching { get<me.lucid.domchat.data.ai.AILoggingManager>().clearLogs() }
+        runCatching { me.lucid.domchat.service.assist.AssistScreenHolder.clear() }
+    }
+}
+
+class AppScope : CoroutineScope by CoroutineScope(
+    SupervisorJob()
+        + Dispatchers.Default
+        + CoroutineName("AppScope")
+        + CoroutineExceptionHandler { _, e ->
+            Log.e(TAG, "AppScope exception", e)
+        }
+)

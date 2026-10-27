@@ -1,0 +1,370 @@
+package me.lucid.domchat.data.repository
+
+import android.util.Log
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withContext
+import me.lucid.domchat.data.datastore.SettingsStore
+import me.lucid.domchat.data.db.dao.WorkspaceDAO
+import me.lucid.domchat.data.db.entity.WorkspaceEntity
+import me.lucid.domchat.utils.JsonInstant
+import me.lucid.workspace.RootfsInstallProgress
+import me.lucid.workspace.RootfsInstallStage
+import me.lucid.workspace.RootfsInstaller
+import me.lucid.workspace.WorkspaceCommandResult
+import me.lucid.workspace.WorkspaceFileEntry
+import me.lucid.workspace.WorkspaceManager
+import me.lucid.workspace.WorkspaceShellStatus
+import me.lucid.workspace.WorkspaceStorageArea
+import java.io.InputStream
+import java.io.OutputStream
+import kotlin.uuid.Uuid
+
+class WorkspaceRepository(
+    private val dao: WorkspaceDAO,
+    private val manager: WorkspaceManager,
+    private val rootfsInstaller: RootfsInstaller,
+    private val settingsStore: SettingsStore,
+) {
+    fun listFlow(): Flow<List<WorkspaceEntity>> = dao.listFlow()
+
+    suspend fun checkIntegrity() = withContext(Dispatchers.IO) {
+        val workspaces = dao.getAll()
+        for (workspace in workspaces) {
+            val dir = manager.workspaceDir(workspace.root)
+            if (!dir.exists()) {
+                Log.w(TAG, "Workspace directory missing, removing record: id=${workspace.id}, root=${workspace.root}")
+                dao.deleteById(workspace.id)
+                cleanupAssistantReferences(workspace.id)
+                continue
+            }
+            val statusName = workspace.shellStatus
+            if ((statusName == WorkspaceShellStatus.READY.name || statusName == WorkspaceShellStatus.INSTALLING.name)
+                && !manager.hasRootfs(workspace.root)
+            ) {
+                Log.w(TAG, "Rootfs missing, resetting shell status: id=${workspace.id}")
+                updateShellState(workspace.id, WorkspaceShellStatus.DISABLED.name)
+            }
+        }
+    }
+
+    suspend fun getById(id: String): WorkspaceEntity? = dao.getById(id)
+
+    suspend fun create(name: String): WorkspaceEntity {
+        val id = Uuid.random().toString()
+        val now = System.currentTimeMillis()
+        val finalName = name.trim().ifBlank { "Workspace" }
+        require(!isNameTaken(finalName, excludeId = null)) {
+            "Workspace name already exists: $finalName"
+        }
+        val workspace = WorkspaceEntity(
+            id = id,
+            name = finalName,
+            root = id,
+            createdAt = now,
+            updatedAt = now,
+            lastAccessAt = null,
+        )
+        manager.ensureWorkspace(workspace.root)
+        dao.upsert(workspace)
+        return workspace
+    }
+
+    suspend fun rename(id: String, name: String): Boolean {
+        val workspace = dao.getById(id) ?: return false
+        val finalName = name.trim().ifBlank { workspace.name }
+        require(!isNameTaken(finalName, excludeId = id)) {
+            "Workspace name already exists: $finalName"
+        }
+        dao.upsert(
+            workspace.copy(
+                name = finalName,
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+        return true
+    }
+
+    /** 名字是否已被其他 workspace 占用（trim 后精确匹配，排除 [excludeId] 自身） */
+    suspend fun isNameTaken(name: String, excludeId: String?): Boolean {
+        val target = name.trim()
+        return dao.getAll().any { it.id != excludeId && it.name.trim() == target }
+    }
+
+    suspend fun setToolApproval(id: String, toolName: String, needsApproval: Boolean): Boolean {
+        val workspace = dao.getById(id) ?: return false
+        val overrides = workspace.toolApprovalOverrides() + (toolName to needsApproval)
+        dao.upsert(
+            workspace.copy(
+                toolApprovals = JsonInstant.encodeToString(overrides),
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+        return true
+    }
+
+    suspend fun installRootfs(
+        id: String,
+        url: String,
+        onProgress: (RootfsInstallProgress) -> Unit = {},
+    ): Boolean {
+        val workspace = dao.getById(id) ?: return false
+        updateShellState(workspace, WorkspaceShellStatus.INSTALLING.name)
+        try {
+            // runInterruptible 让协程取消转成线程中断, 打断 install 内阻塞的下载/解压循环
+            runInterruptible(Dispatchers.IO) {
+                rootfsInstaller.install(workspace.root, url, onProgress)
+                onProgress(RootfsInstallProgress(stage = RootfsInstallStage.CONFIGURING))
+                smokeTestRootfs(workspace.root)
+            }
+            updateShellState(workspace, WorkspaceShellStatus.READY.name)
+            return true
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) {
+                restoreShellState(workspace)
+            }
+            throw e
+        } catch (e: InterruptedException) {
+            withContext(NonCancellable) {
+                restoreShellState(workspace)
+            }
+            throw CancellationException("Rootfs install cancelled").also { it.initCause(e) }
+        } catch (e: Throwable) {
+            Log.e(TAG, "installRootfs failed: workspace=${workspace.id}, root=${workspace.root}, url=$url", e)
+            updateShellState(workspace, WorkspaceShellStatus.BROKEN.name)
+            throw e
+        }
+    }
+
+    suspend fun listFiles(
+        id: String,
+        area: WorkspaceStorageArea,
+        path: String,
+    ): List<WorkspaceFileEntry> = withContext(Dispatchers.IO) {
+        val workspace = dao.getById(id) ?: return@withContext emptyList()
+        manager.ensureWorkspace(workspace.root)
+        manager.listFiles(workspace.root, path, area)
+    }
+
+    suspend fun readText(
+        id: String,
+        path: String,
+    ): String = withContext(Dispatchers.IO) {
+        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        manager.ensureWorkspace(workspace.root)
+        manager.readText(workspace.root, path)
+    }
+
+    suspend fun writeText(
+        id: String,
+        path: String,
+        text: String,
+        overwrite: Boolean,
+    ): WorkspaceFileEntry = withContext(Dispatchers.IO) {
+        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        manager.ensureWorkspace(workspace.root)
+        manager.writeText(workspace.root, path, text, overwrite)
+    }
+
+    suspend fun importFile(
+        id: String,
+        area: WorkspaceStorageArea,
+        destinationPath: String,
+        fileName: String,
+        inputStream: InputStream,
+    ): WorkspaceFileEntry = withContext(Dispatchers.IO) {
+        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        manager.ensureWorkspace(workspace.root)
+        manager.importFile(workspace.root, destinationPath, area, fileName, inputStream)
+    }
+
+    suspend fun fileSize(
+        id: String,
+        area: WorkspaceStorageArea,
+        path: String,
+    ): Long = withContext(Dispatchers.IO) {
+        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        manager.fileSize(workspace.root, path, area)
+    }
+
+    suspend fun exportFile(
+        id: String,
+        area: WorkspaceStorageArea,
+        path: String,
+        outputStream: OutputStream,
+    ) = withContext(Dispatchers.IO) {
+        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        manager.exportFile(workspace.root, path, area, outputStream)
+    }
+
+    suspend fun deleteFile(
+        id: String,
+        area: WorkspaceStorageArea,
+        path: String,
+        recursive: Boolean,
+    ): Boolean {
+        val deleted = withContext(Dispatchers.IO) {
+            val workspace = dao.getById(id) ?: return@withContext false
+            manager.deleteFile(workspace.root, path, recursive, area)
+        }
+        return deleted
+    }
+
+    suspend fun executeCommand(
+        id: String,
+        command: String,
+        cwd: String = "",
+        timeoutMillis: Long = WorkspaceManager.DEFAULT_COMMAND_TIMEOUT_MS,
+        stdin: ByteArray? = null,
+    ): WorkspaceCommandResult {
+        val workspace = dao.getById(id) ?: error("Workspace not found: $id")
+        // runInterruptible 让协程取消转化为线程中断，从而打断阻塞的 Process.waitFor 并杀掉进程
+        val result = runInterruptible(Dispatchers.IO) {
+            manager.ensureWorkspace(workspace.root)
+            manager.executeCommand(workspace.root, command, cwd, timeoutMillis, stdin)
+        }
+        if (result.isFatalProotFailure()) {
+            updateShellState(workspace, WorkspaceShellStatus.BROKEN.name)
+        }
+        return result.withWorkspaceRuntimeHint()
+    }
+
+    suspend fun delete(id: String): Boolean {
+        val workspace = dao.getById(id) ?: return false
+        dao.deleteById(id)
+        withContext(Dispatchers.IO) {
+            manager.deleteWorkspace(workspace.root)
+        }
+        cleanupAssistantReferences(id)
+        return true
+    }
+
+    private suspend fun cleanupAssistantReferences(workspaceId: String) {
+        settingsStore.update { settings ->
+            settings.copy(
+                assistants = settings.assistants.map { assistant ->
+                    if (assistant.workspaceId?.toString() == workspaceId) {
+                        assistant.copy(workspaceId = null)
+                    } else {
+                        assistant
+                    }
+                }
+            )
+        }
+    }
+
+    private suspend fun restoreShellState(workspace: WorkspaceEntity) {
+        updateShellState(workspace.id, workspace.shellStatus)
+    }
+
+    private suspend fun updateShellState(
+        workspace: WorkspaceEntity,
+        shellStatus: String,
+    ) = updateShellState(workspace.id, shellStatus)
+
+    private suspend fun updateShellState(
+        workspaceId: String,
+        shellStatus: String,
+    ) {
+        dao.updateShellStatus(
+            id = workspaceId,
+            shellStatus = shellStatus,
+            updatedAt = System.currentTimeMillis(),
+        )
+    }
+
+    private fun smokeTestRootfs(root: String) {
+        val smoke = manager.executeCommand(
+            root = root,
+            command = "printf '%s' workspace-ready && test -d /workspace",
+            timeoutMillis = ROOTFS_SMOKE_TIMEOUT_MS,
+        )
+        require(smoke.exitCode == 0 && !smoke.timedOut && !smoke.isFatalProotFailure()) {
+            "Rootfs smoke test failed: ${smoke.failureText()}"
+        }
+    }
+
+    private fun installPythonInternal(root: String) {
+        val python = manager.executeCommand(
+            root = root,
+            command = PYTHON_BOOTSTRAP_COMMAND,
+            timeoutMillis = PYTHON_BOOTSTRAP_TIMEOUT_MS,
+        )
+        require(python.exitCode == 0 && !python.timedOut && !python.isFatalProotFailure()) {
+            "Python setup failed: ${python.failureText()}"
+        }
+    }
+
+    suspend fun installPython(id: String): Boolean {
+        val workspace = dao.getById(id) ?: return false
+        runInterruptible(Dispatchers.IO) {
+            installPythonInternal(workspace.root)
+        }
+        return true
+    }
+
+    suspend fun isPythonInstalled(id: String): Boolean {
+        val workspace = dao.getById(id) ?: return false
+        if (!manager.hasRootfs(workspace.root)) return false
+        return runInterruptible(Dispatchers.IO) {
+            val result = manager.executeCommand(
+                root = workspace.root,
+                command = "command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1",
+                timeoutMillis = PYTHON_STATUS_TIMEOUT_MS,
+            )
+            result.exitCode == 0 && !result.timedOut && !result.isFatalProotFailure()
+        }
+    }
+
+    companion object {
+        private const val TAG = "WorkspaceRepository"
+        private const val ROOTFS_SMOKE_TIMEOUT_MS = 30_000L
+        private const val PYTHON_STATUS_TIMEOUT_MS = 10_000L
+        private const val PYTHON_BOOTSTRAP_TIMEOUT_MS = 10 * 60_000L
+        private val PYTHON_BOOTSTRAP_COMMAND = """
+            set -e
+            if command -v apt-get >/dev/null 2>&1; then
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends ca-certificates python3 python3-pip
+            elif command -v apk >/dev/null 2>&1; then
+              apk add --no-cache ca-certificates python3 py3-pip
+            else
+              echo "Unsupported rootfs package manager: expected apt-get or apk" >&2
+              exit 1
+            fi
+            python3 --version
+            python3 -m pip --version
+        """.trimIndent()
+    }
+}
+
+private fun WorkspaceCommandResult.isFatalProotFailure(): Boolean {
+    val text = "$stderr\n$stdout"
+    return text.contains("proot error:", ignoreCase = true) ||
+        text.contains("proot launch failed with", ignoreCase = true) ||
+        text.contains("proot info:", ignoreCase = true) ||
+        text.contains("fatal error: see", ignoreCase = true) ||
+        text.contains("ptrace(TRACEME)", ignoreCase = true) ||
+        text.contains("Function not implemented", ignoreCase = true)
+}
+
+private fun WorkspaceCommandResult.withWorkspaceRuntimeHint(): WorkspaceCommandResult {
+    if (!isFatalProotFailure()) return this
+    val hint = "\n\nWorkspace runtime is broken. Reinstall or repair the rootfs, and make sure this device uses a supported 64-bit ABI with the bundled workspace proot runtime."
+    return copy(stderr = stderr.trimEnd() + hint)
+}
+
+private fun WorkspaceCommandResult.failureText(): String {
+    val message = listOf(stdout.trim(), stderr.trim())
+        .filter { it.isNotBlank() }
+        .joinToString("\n")
+    return when {
+        timedOut -> "timed out\n$message"
+        message.isNotBlank() -> message
+        else -> "exit code $exitCode"
+    }
+}
