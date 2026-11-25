@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+  <cache-path
+    name="cache"
+    path="." />
+  <external-files-path
+    name="external_files"
+    path="." />
+  <files-path
+    name="upload"
+    path="upload/" />
+  <files-path
+    name="chat_files"
+    path="chat_files/" />
+  <files-path
+    name="avatars"
+    path="avatars/" />
+  <files-path
+    name="assistant_backgrounds"
+    path="assistant_backgrounds/" />
+  <files-path
+    name="lorebook_covers"
+    path="lorebook_covers/" />
+  <files-path
+    name="lorebook_attachments"
+    path="lorebook_attachments/" />
+</paths>

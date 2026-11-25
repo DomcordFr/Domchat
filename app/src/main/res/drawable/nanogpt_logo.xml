@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pure white NanoGPT vector logo -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="182dp"
+    android:height="187dp"
+    android:viewportWidth="181.45"
+    android:viewportHeight="186.88">
+    <path
+        android:pathData="M145.31,72.24 L93.39,184.24 L43.86,103.66 Z"
+        android:fillColor="#FFFFFFFF" />
+    <path
+        android:pathData="M106.21,2.68 L146.51,64.44 L44.1,96.46 L70.86,27.88 Z"
+        android:fillColor="#FFFFFFFF" />
+    <path
+        android:pathData="M30.06,42.79 L53.68,52.46 L36.31,96.93 L2.6,78.59 Z"
+        android:fillColor="#FFFFFFFF" />
+    <path
+        android:pathData="M109.82,166.73 L153.7,71.14 L178.89,81.47 Z"
+        android:fillColor="#FFFFFFFF" />
+    <path
+        android:pathData="M173.61,71.76 L154.18,63.48 L129.51,25.14 L134.6,21.19 Z"
+        android:fillColor="#FFFFFFFF" />
+    <path
+        android:pathData="M65.92,153.78 L12.44,91.91 L34.91,104.09 L35.83,104.85 Z"
+        android:fillColor="#FFFFFFFF" />
+</vector>

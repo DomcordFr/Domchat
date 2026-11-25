@@ -1,0 +1,147 @@
+name: Release Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Prepare build files
+        run: |
+          if [ -n "${{ secrets.KEY_BASE64 }}" ]; then
+            echo "${{ secrets.KEY_BASE64 }}" | base64 -d > app/app.key
+          fi
+          if [ -n "${{ secrets.SIGNING_CONFIG }}" ]; then
+            echo "${{ secrets.SIGNING_CONFIG }}" > local.properties
+          fi
+          if [ -n "${{ secrets.GOOGLE_SERVICES_JSON }}" ]; then
+            echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
+          elif [ ! -f app/google-services.json ]; then
+            cat << 'EOF' > app/google-services.json
+          {
+            "project_info": {
+              "project_number": "123456789012",
+              "project_id": "domchat-app",
+              "storage_bucket": "domchat-app.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:123456789012:android:abcdef0123456789",
+                  "android_client_info": {
+                    "package_name": "com.domchat.app"
+                  }
+                },
+                "oauth_client": [],
+                "api_key": [
+                  {
+                    "current_key": "dummy_api_key_for_build"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
+              },
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:123456789012:android:abcdef0123456788",
+                  "android_client_info": {
+                    "package_name": "com.domchat.app.dev"
+                  }
+                },
+                "oauth_client": [],
+                "api_key": [
+                  {
+                    "current_key": "dummy_api_key_for_build"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          EOF
+          fi
+
+      - name: Gradle Build
+        env:
+          JAVA_OPTS: "-Xmx5120m -XX:+UseG1GC"
+          GRADLE_OPTS: "-Xmx5120m -XX:+UseG1GC -Dfile.encoding=UTF-8"
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleStableRelease
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: Domchat-APKs
+          path: app/build/outputs/apk/**/*.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          tag_name: v1.0
+          name: "Domchat v1.0"
+          body: |
+            ## Welcome to Domchat v1.0
+
+            Domchat is a native Android AI roleplay app built for immersion, privacy, and actually owning your chats. No ads, no pop-ups, no paywalls, and no accounts.
+
+            ### Highlights
+            - **Built-In JanitorAI Hub**: Browse and import bots directly from JanitorAI straight into your local library, plus full support for SillyTavern Character Card V2 (`.png` and `.json`).
+            - **AMOLED Black & Liquid Glass Design**: Customize wallpapers, glass blur, transparency, and fonts in a smooth native Android interface built for long reading sessions.
+            - **Roleplay Tools Included**: Multiple user personas, keyword-triggered Lorebooks (World Info), swipe-to-regenerate alternate replies, message editing, Context Budget controls, and Character Notes.
+            - **Bring Your Own AI (or Run Offline)**: Connect OpenRouter, Nano-GPT, Featherless, DeepSeek, Claude, OpenAI, or any OpenAI-compatible proxy, or run local on-device models with Google LiteRT.
+            - **Natural Voice (TTS & STT)**: Listen to character replies with Fish Audio, ElevenLabs, OpenAI Audio, or free Android system voices, plus local on-device Speech-to-Text.
+            - **100% Local Ownership**: All chats, characters, personas, and lorebooks stay on your phone with one-tap lossless backup and restore.
+
+            ### Which APK Should I Download?
+            - **`Domchat_1.0_stable-arm64-v8a-release.apk`** (Recommended): Best choice for almost all modern Android phones.
+            - **`Domchat_1.0_stable-universal-release.apk`**: Works on all Android architectures if you are unsure.
+
+            ### Links & Community
+            - **Discord Server**: [discord.gg/domcord](https://discord.gg/domcord)
+            - **Full Guide & Source Code**: [DomcordFr/Domchat](https://github.com/DomcordFr/Domchat)
+          files: app/build/outputs/apk/**/*.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

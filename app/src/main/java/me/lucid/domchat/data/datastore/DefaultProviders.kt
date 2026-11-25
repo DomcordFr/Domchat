@@ -1,0 +1,8 @@
+package me.lucid.domchat.data.datastore
+
+import me.lucid.ai.provider.ProviderSetting
+
+// A fresh install starts with an empty provider list. No providers are seeded — the user adds
+// them (including the on-device "Local" provider) via the provider presets / first-time setup.
+// See ProviderPresets.kt (SPECIAL_PROVIDER_PRESETS).
+val DEFAULT_PROVIDERS = emptyList<ProviderSetting>()
